@@ -39,6 +39,8 @@ var that           = {},  // Public API methods
     rfb_port       = 5900,
     rfb_password   = '',
     rfb_path       = '',
+    
+    xvp_target     = '',
 
     rfb_state      = 'disconnected',
     rfb_version    = 0,
@@ -64,6 +66,9 @@ var that           = {},  // Public API methods
         //['compress_lo',      -255 ],
         ['compress_hi',        -247 ],
         ['last_rect',          -224 ]
+        
+        //XVP
+    //    ['xvp',                 -309 ]
         ],
 
     encHandlers    = {},
@@ -669,8 +674,11 @@ init_msg = function() {
         i, types, num_types, challenge, response, bpp, depth,
         big_endian, red_max, green_max, blue_max, red_shift,
         green_shift, blue_shift, true_color, name_length, is_repeater;
+        
 
     //Util.Debug("ws.rQ (" + ws.rQlen() + ") " + ws.rQslice(0));
+    
+    
     switch (rfb_state) {
 
     case 'ProtocolVersion' :
@@ -716,6 +724,7 @@ init_msg = function() {
         cversion = "00" + parseInt(rfb_version,10) +
                    ".00" + ((rfb_version * 10) % 10);
         ws.send_string("RFB " + cversion + "\n");
+        
         updateState('Security', "Sent ProtocolVersion: " + cversion);
         break;
 
@@ -732,24 +741,49 @@ init_msg = function() {
             rfb_auth_scheme = 0;
             types = ws.rQshiftBytes(num_types);
             Util.Debug("Server security types: " + types);
+
             for (i=0; i < types.length; i+=1) {
                 if ((types[i] > rfb_auth_scheme) && (types[i] < 3)) {
                     rfb_auth_scheme = types[i];
                 }
             }
+            rfb_auth_scheme=types[1]; //hack for manually selecting XVP auth -> 22
+            
             if (rfb_auth_scheme === 0) {
                 return fail("Unsupported security types: " + types);
             }
-            
             ws.send([rfb_auth_scheme]);
         } else {
             // Server decides
+            
             if (ws.rQwait("security scheme", 4)) { return false; }
             rfb_auth_scheme = ws.rQshift32();
+            
+            
         }
-        updateState('Authentication',
-                "Authenticating using scheme: " + rfb_auth_scheme);
+        updateState('XVPAuthentication',
+                "XVPAuthentication using scheme: " + rfb_auth_scheme);
         init_msg();  // Recursive fallthrough (workaround JSLint complaint)
+        break;
+
+    
+    case 'XVPAuthentication':
+        switch (rfb_auth_scheme) {
+            case 22:  // XVP authentication
+
+                //XVP                
+                                
+                var xvp_user="";
+                var xvpconfig = String.fromCharCode(xvp_user.length) + String.fromCharCode(xvp_target.length) + xvp_user + xvp_target;
+
+                ws.send_string(xvpconfig);
+            
+                
+                updateState('Authentication',
+                        "Authentication using scheme: " + rfb_auth_scheme);
+            
+        }
+    
         break;
 
     // Triggered by fallthough, not by server message
@@ -769,6 +803,7 @@ init_msg = function() {
                 // Fall through to ClientInitialisation
                 break;
             case 2:  // VNC authentication
+
                 if (rfb_password.length === 0) {
                     // Notify via both callbacks since it is kind of
                     // a RFB state change and a UI interface issue.
@@ -776,6 +811,8 @@ init_msg = function() {
                     conf.onPasswordRequired(that);
                     return;
                 }
+                
+                
                 if (ws.rQwait("auth challenge", 16)) { return false; }
                 challenge = ws.rQshiftBytes(16);
                 //Util.Debug("Password: " + rfb_password);
@@ -787,12 +824,12 @@ init_msg = function() {
                 
                 //Util.Debug("Sending DES encrypted auth response");
                 ws.send(response);
+                                
                 updateState('SecurityResult');
                 return;
-            default:
-                fail("Unsupported auth scheme: " + rfb_auth_scheme);
-                return;
-        }
+                
+                
+
         updateState('ClientInitialisation', "No auth required");
         init_msg();  // Recursive fallthrough (workaround JSLint complaint)
         break;
@@ -801,9 +838,10 @@ init_msg = function() {
         if (ws.rQwait("VNC auth response ", 4)) { return false; }
         switch (ws.rQshift32()) {
             case 0:  // OK
+                
                 // Fall through to ClientInitialisation
                 break;
-            case 1:  // failed
+            case 1:  // failed                
                 if (rfb_version >= 3.8) {
                     length = ws.rQshift32();
                     if (ws.rQwait("SecurityResult reason", length, 8)) {
@@ -860,6 +898,7 @@ init_msg = function() {
                   ", green_shift: " + green_shift +
                   ", blue_shift: " + blue_shift);
 
+
         if (big_endian !== 0) {
             Util.Warn("Server native endian is not little endian");
         }
@@ -873,6 +912,7 @@ init_msg = function() {
         /* Connection name/title */
         name_length   = ws.rQshift32();
         fb_name = ws.rQshiftStr(name_length);
+        
         
         if (conf.true_color && fb_name === "Intel(r) AMT KVM")
         {
@@ -899,6 +939,7 @@ init_msg = function() {
         response = response.concat(fbUpdateRequests());
         timing.fbu_rt_start = (new Date()).getTime();
         timing.pixels = 0;
+        
         ws.send(response);
         
         /* Start pushing/polling */
@@ -917,7 +958,8 @@ init_msg = function() {
 
 /* Normal RFB/VNC server message handler */
 normal_msg = function() {
-    //Util.Debug(">> normal_msg");
+    Util.Debug(">> normal_msg");
+    
 
     var ret = true, msg_type, length, text,
         c, first_colour, num_colours, red, green, blue;
@@ -927,8 +969,13 @@ normal_msg = function() {
     } else {
         msg_type = ws.rQshift8();
     }
+    
+    
+    
     switch (msg_type) {
+    
     case 0:  // FramebufferUpdate
+    
         ret = framebufferUpdate(); // false means need more data
         break;
     case 1:  // SetColourMapEntries
@@ -966,9 +1013,10 @@ normal_msg = function() {
         conf.clipboardReceive(that, text); // Obsolete
         conf.onClipboard(that, text);
         break;
+        
     default:
         fail("Disconnected: illegal server message type " + msg_type);
-        Util.Debug("ws.rQslice(0,30):" + ws.rQslice(0,30));
+        ws.rQshiftBytes(3);  // Padding
         break;
     }
     //Util.Debug("<< normal_msg");
@@ -986,7 +1034,7 @@ framebufferUpdate = function() {
         }
         ws.rQshift8();  // padding
         FBU.rects = ws.rQshift16();
-        //Util.Debug("FramebufferUpdate, rects:" + FBU.rects);
+        Util.Debug("FramebufferUpdate, rects:" + FBU.rects);
         FBU.bytes = 0;
         timing.cur_fbu = 0;
         if (timing.fbu_rt_start > 0) {
@@ -1012,11 +1060,15 @@ framebufferUpdate = function() {
             FBU.encoding = parseInt((hdr[8] << 24) + (hdr[9] << 16) +
                                     (hdr[10] << 8) +  hdr[11], 10);
 
+            
+            
             conf.onFBUReceive(that,
                     {'x': FBU.x, 'y': FBU.y,
                      'width': FBU.width, 'height': FBU.height,
                      'encoding': FBU.encoding,
                      'encodingName': encNames[FBU.encoding]});
+
+                     
 
             if (encNames[FBU.encoding]) {
                 // Debug:
@@ -1030,9 +1082,19 @@ framebufferUpdate = function() {
                 Util.Debug(msg);
                 */
             } else {
+                var msg =  "FramebufferUpdate rects:" + FBU.rects;
+                msg += " x: " + FBU.x + " y: " + FBU.y;
+                msg += " width: " + FBU.width + " height: " + FBU.height;
+                msg += " encoding:" + FBU.encoding;
+                msg += "(" + encNames[FBU.encoding] + ")";
+                msg += ", ws.rQlen(): " + ws.rQlen();
+                Util.Debug(msg);
+
+                
                 fail("Disconnected: unsupported encoding " +
                     FBU.encoding);
                 return false;
+                
             }
         }
 
@@ -1583,6 +1645,9 @@ encHandlers.last_rect = function last_rect() {
     return true;
 };
 
+
+
+
 encHandlers.DesktopSize = function set_desktopsize() {
     Util.Debug(">> set_desktopsize");
     fb_width = FBU.width;
@@ -1671,6 +1736,7 @@ clientEncodings = function() {
     var arr, i, encList = [];
 
     for (i=0; i<encodings.length; i += 1) {
+        Util.Debug("Enc: " + encodings[i][0]);
         if ((encodings[i][0] === "Cursor") &&
             (! conf.local_cursor)) {
             Util.Debug("Skipping Cursor pseudo-encoding");
@@ -1715,6 +1781,7 @@ fbUpdateRequest = function(incremental, x, y, xw, yw) {
 
 // Based on clean/dirty areas, generate requests to send
 fbUpdateRequests = function() {
+    
     var cleanDirty = display.getCleanDirtyReset(),
         arr = [], i, cb, db;
 
@@ -1778,13 +1845,15 @@ clientCutText = function(text) {
 // Public API interface functions
 //
 
-that.connect = function(host, port, password, path) {
+that.connect = function(host, port, xvp_target_param, password, path) {
     //Util.Debug(">> connect");
 
+    
     rfb_host       = host;
     rfb_port       = port;
     rfb_password   = (password !== undefined)   ? password : "";
     rfb_path       = (path !== undefined) ? path : "";
+    xvp_target      = xvp_target_param;
 
     if ((!rfb_host) || (!rfb_port)) {
         return fail("Must set host and port");
@@ -1851,10 +1920,12 @@ that.testMode = function(override_send, data_mode) {
     that.recv_message = ws.testMode(override_send, data_mode);
 
     checkEvents = function () { /* Stub Out */ };
-    that.connect = function(host, port, password) {
+    that.connect = function(host, port, xvp_target, password) {
+        
             rfb_host = host;
             rfb_port = port;
             rfb_password = password;
+            xvp_target = xvp_target;
             init_vars();
             updateState('ProtocolVersion', "Starting VNC handshake");
         };
